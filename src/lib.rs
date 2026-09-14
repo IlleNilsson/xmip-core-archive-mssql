@@ -3,8 +3,9 @@
 //! SQL Server archive: an [`ArchiveStore`] that keeps each retained item as
 //! one row of an archive table, and restores it by selecting the row back.
 //!
-//! The metadata text, the timestamp, the layout and the checksum come
-//! from the archive capability (ADR-0044); only the dialect is this crate's.
+//! The metadata text, the timestamp, the shared row code and the receipt
+//! parser come from the archive capability (ADR-0044); only the dialect is
+//! this crate's.
 //!
 //! A xmip-core-archive **technology** (repository-model.md): it depends on
 //! the archive capability for the [`ArchiveStore`] trait and its item,
@@ -35,7 +36,7 @@ pub mod row;
 
 use std::time::Duration;
 
-use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore};
+use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore, location};
 use mssql::{Client, Login};
 
 /// The table written to unless told otherwise.
@@ -93,7 +94,8 @@ impl MssqlArchive {
 
     fn connect(&self) -> Result<Client, ArchiveError> {
         let login = Login::new(&*self.user, self.password.clone().unwrap_or_default());
-        Client::connect(&self.server, &self.database, &login, self.timeout).map_err(error)
+        Client::connect(&self.server, &self.database, &login, self.timeout)
+            .map_err(ArchiveError::caused_by)
     }
 
     fn location(&self, id: &str) -> String {
@@ -109,8 +111,8 @@ impl ArchiveStore for MssqlArchive {
         let archived_at = archive::timestamp::now();
         let sql = row::insert_sql(&self.table, &item, &archived_at);
         let mut client = self.connect()?;
-        let result = client.query(&sql).map_err(error)?;
-        client.close().map_err(error)?;
+        let result = client.query(&sql).map_err(ArchiveError::caused_by)?;
+        client.close().map_err(ArchiveError::caused_by)?;
         let id = result
             .rows
             .first()
@@ -127,61 +129,27 @@ impl ArchiveStore for MssqlArchive {
     }
 
     fn restore(&self, receipt: &ArchiveReceipt) -> Result<ArchiveItem, ArchiveError> {
-        let (table, id) = parse_location(&receipt.location)?;
+        let (table, id) = location::table_row("mssql", &receipt.location)?;
         let mut client = self.connect()?;
-        let result = client.query(&row::select_sql(table, id)).map_err(error)?;
-        client.close().map_err(error)?;
+        let result = client
+            .query(&row::DIALECT.select_sql(table, id))
+            .map_err(ArchiveError::caused_by)?;
+        client.close().map_err(ArchiveError::caused_by)?;
         let first = result.rows.first().ok_or_else(|| ArchiveError {
             message: format!("no row at {}", receipt.location),
         })?;
-        row::item_from_row(first, &receipt.location)
-    }
-}
-
-/// The table and id a receipt names:
-/// `mssql://<server>/<database>/<table>?id=<n>`.
-fn parse_location(location: &str) -> Result<(&str, u64), ArchiveError> {
-    let malformed = || ArchiveError {
-        message: format!("{location} is not mssql://server/database/table?id=n"),
-    };
-    let rest = location.strip_prefix("mssql://").ok_or_else(malformed)?;
-    let (path, query) = rest.split_once('?').ok_or_else(malformed)?;
-    let id = query
-        .strip_prefix("id=")
-        .and_then(|digits| digits.parse().ok())
-        .ok_or_else(malformed)?;
-    match path.splitn(3, '/').collect::<Vec<_>>().as_slice() {
-        [_, _, table] if !table.is_empty() => Ok((table, id)),
-        _ => Err(malformed()),
-    }
-}
-
-fn error(cause: impl std::fmt::Display) -> ArchiveError {
-    ArchiveError {
-        message: cause.to_string(),
+        row::DIALECT.item_from_row(first, &receipt.location)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archive::fixture::{item, secs};
     use mssql::binary;
     use mssql::{Answer, Event, Session};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
-
-    fn secs(n: u64) -> Duration {
-        Duration::from_secs(n)
-    }
-
-    fn item(id: &str) -> ArchiveItem {
-        ArchiveItem {
-            data_type: "json".to_string(),
-            identifier: id.to_string(),
-            bytes: b"{\"kept\":true}".to_vec(),
-            metadata: vec![("source".to_string(), "playground".to_string())],
-        }
-    }
 
     /// A far end that serves `connections` clients in turn: any INSERT is
     /// answered with id 41, any SELECT with the canned row for `held`, and
@@ -297,9 +265,5 @@ mod tests {
             let failure = store.restore(&receipt).expect_err(location);
             assert!(failure.message.contains("is not mssql://"), "{failure}");
         }
-        assert_eq!(
-            parse_location("mssql://h:1433/db/audit.archive?id=7").expect("parsed"),
-            ("audit.archive", 7)
-        );
     }
 }
