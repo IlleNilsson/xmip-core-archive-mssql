@@ -1,19 +1,18 @@
 #![forbid(unsafe_code)]
 
-//! SQL Server archive: an [`ArchiveStore`] that keeps each retained item as
-//! one row of an archive table, and restores it by selecting the row back.
+//! SQL Server archive: the [`Dialect`] the archive capability's
+//! `SqlArchive` keeps each retained item in an archive table with, as
+//! `SqlArchive::<SqlServer>`.
 //!
-//! The metadata text, the timestamp, the shared row code and the receipt
-//! parser come from the archive capability (ADR-0044); only the dialect is
-//! this crate's.
-//!
-//! A xmip-core-archive **technology** (repository-model.md): it depends on
-//! the archive capability for the [`ArchiveStore`] trait and its item,
-//! receipt and error types, and on the SQL Server transport technology for
-//! the connection — TDS 7.4 with SQL Server authentication. One item is one
-//! row with the four columns every archive technology carries —
-//! `data_type`, `identifier`, `bytes`, `metadata` — and `archived_at`, when
-//! it was handed over. The table is the operator's to create; this is the
+//! The store, the row, the SELECT and the receipt are the capability's
+//! (`archive::sql`, ADR-0044); only the dialect is this crate's —
+//! bracketed identifiers, `N'…'` literals, the bytes as the `0x…` binary
+//! literal T-SQL itself writes, which a `varbinary` column stores as the
+//! bytes and answers in the same form (a text column that kept the literal
+//! verbatim answers it too, and either comes back as the bytes), and the
+//! new row's id asked for through the OUTPUT clause. The connection is the
+//! SQL Server transport technology's — TDS 7.4 with SQL Server
+//! authentication. The table is the operator's to create; this is the
 //! shape it is written for:
 //!
 //! ```sql
@@ -27,118 +26,48 @@
 //! );
 //! ```
 //!
-//! An archive never deletes (ADR-0040): this one inserts and selects, nothing
-//! else. The receipt is `mssql://<server>/<database>/<table>?id=<n>`, and
-//! restoring reads the table and the id from it on the store's own
-//! connection.
+//! The receipt is `mssql://<server>/<database>/<table>?id=<n>`.
 
-pub mod row;
+use archive::ArchiveError;
+use archive::sql::{Dialect, Row, Server};
+use mssql::{Client, Login, binary};
 
-use std::time::Duration;
+/// What SQL Server does its own way.
+pub struct SqlServer;
 
-use archive::{ArchiveError, ArchiveItem, ArchiveReceipt, ArchiveStore, location};
-use mssql::{Client, Login};
+impl Dialect for SqlServer {
+    const SCHEME: &'static str = "mssql";
+    const ID_BEFORE_VALUES: &'static str = " OUTPUT INSERTED.id";
+    type Connection = Client;
 
-/// The table written to unless told otherwise.
-pub const DEFAULT_TABLE: &str = "archive";
-
-/// An archive that keeps items as rows of one table on one server.
-pub struct MssqlArchive {
-    server: String,
-    database: String,
-    user: String,
-    password: Option<String>,
-    table: String,
-    timeout: Option<Duration>,
-}
-
-impl MssqlArchive {
-    /// An archive writing to [`DEFAULT_TABLE`] in `database` at `server`,
-    /// logging in as `user` with an empty password.
-    #[must_use]
-    pub fn new(
-        server: impl Into<String>,
-        database: impl Into<String>,
-        user: impl Into<String>,
-    ) -> Self {
-        Self {
-            server: server.into(),
-            database: database.into(),
-            user: user.into(),
-            password: None,
-            table: DEFAULT_TABLE.to_string(),
-            timeout: None,
-        }
+    fn quote_identifier(name: &str) -> String {
+        mssql::quote_identifier(name)
     }
 
-    /// The password the login carries.
-    #[must_use]
-    pub fn with_password(mut self, password: impl Into<String>) -> Self {
-        self.password = Some(password.into());
-        self
+    fn quote_literal(text: &str) -> String {
+        mssql::quote_literal(text)
     }
 
-    /// The table to write to, `audit.archive` say.
-    #[must_use]
-    pub fn with_table(mut self, table: impl Into<String>) -> Self {
-        self.table = table.into();
-        self
+    fn bytes_literal(bytes: &[u8]) -> String {
+        binary::hex_literal(bytes)
     }
 
-    /// Give up on a server that stops mid-message.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
+    fn column_bytes(text: String) -> Vec<u8> {
+        binary::column_bytes(text)
     }
 
-    fn connect(&self) -> Result<Client, ArchiveError> {
-        let login = Login::new(&*self.user, self.password.clone().unwrap_or_default());
-        Client::connect(&self.server, &self.database, &login, self.timeout)
+    fn connect(server: &Server) -> Result<Client, ArchiveError> {
+        let login = Login::new(&*server.user, server.password.clone().unwrap_or_default());
+        Client::connect(&server.address, &server.database, &login, server.timeout)
             .map_err(ArchiveError::caused_by)
     }
 
-    fn location(&self, id: &str) -> String {
-        format!(
-            "mssql://{}/{}/{}?id={id}",
-            self.server, self.database, self.table
-        )
-    }
-}
-
-impl ArchiveStore for MssqlArchive {
-    fn archive(&self, item: ArchiveItem) -> Result<ArchiveReceipt, ArchiveError> {
-        let archived_at = archive::timestamp::now();
-        let sql = row::insert_sql(&self.table, &item, &archived_at);
-        let mut client = self.connect()?;
-        let result = client.query(&sql).map_err(ArchiveError::caused_by)?;
-        client.close().map_err(ArchiveError::caused_by)?;
-        let id = result
-            .rows
-            .first()
-            .and_then(|first| first.first())
-            .cloned()
-            .flatten()
-            .ok_or_else(|| ArchiveError {
-                message: format!("the insert into {} returned no id", self.table),
-            })?;
-        Ok(ArchiveReceipt {
-            location: self.location(&id),
-            checksum: None,
-        })
+    fn select(client: &mut Client, sql: &str) -> Result<Vec<Row>, ArchiveError> {
+        Ok(client.query(sql).map_err(ArchiveError::caused_by)?.rows)
     }
 
-    fn restore(&self, receipt: &ArchiveReceipt) -> Result<ArchiveItem, ArchiveError> {
-        let (table, id) = location::table_row("mssql", &receipt.location)?;
-        let mut client = self.connect()?;
-        let result = client
-            .query(&row::DIALECT.select_sql(table, id))
-            .map_err(ArchiveError::caused_by)?;
-        client.close().map_err(ArchiveError::caused_by)?;
-        let first = result.rows.first().ok_or_else(|| ArchiveError {
-            message: format!("no row at {}", receipt.location),
-        })?;
-        row::DIALECT.item_from_row(first, &receipt.location)
+    fn close(client: Client) -> Result<(), ArchiveError> {
+        client.close().map_err(ArchiveError::caused_by)
     }
 }
 
@@ -146,7 +75,8 @@ impl ArchiveStore for MssqlArchive {
 mod tests {
     use super::*;
     use archive::fixture::{item, secs};
-    use mssql::binary;
+    use archive::sql::{SqlArchive, insert_sql, item_from_row, select_sql};
+    use archive::{ArchiveItem, ArchiveReceipt, ArchiveStore, metadata};
     use mssql::{Answer, Event, Session};
     use std::net::TcpListener;
     use std::thread::JoinHandle;
@@ -166,7 +96,7 @@ mod tests {
             Some(held.data_type.clone()),
             Some(held.identifier.clone()),
             Some(binary::hex_literal(&held.bytes)),
-            Some(archive::metadata::encode(&held.metadata)),
+            Some(metadata::encode(&held.metadata)),
         ];
         let handle = std::thread::spawn(move || {
             let mut events = Vec::new();
@@ -199,11 +129,57 @@ mod tests {
         (address, handle)
     }
 
+    fn quoted() -> ArchiveItem {
+        ArchiveItem {
+            data_type: "json".to_string(),
+            identifier: "it's #1".to_string(),
+            bytes: vec![0x7b, 0xff],
+            metadata: vec![("source".to_string(), "playground".to_string())],
+        }
+    }
+
+    #[test]
+    fn the_insert_names_the_five_columns_and_asks_for_the_id() {
+        let sql = insert_sql::<SqlServer>("audit.archive", &quoted(), "2026-09-09T12:00:00Z");
+        assert!(sql.starts_with(
+            "INSERT INTO [audit].[archive] \
+             (data_type, identifier, bytes, metadata, archived_at) OUTPUT INSERTED.id \
+             VALUES (N'json', N'it''s #1', 0x7bff, "
+        ));
+        assert!(sql.ends_with("N'2026-09-09T12:00:00Z')"), "{sql}");
+        assert_eq!(
+            select_sql::<SqlServer>("Archive", 41),
+            "SELECT data_type, identifier, bytes, metadata FROM [Archive] WHERE id = 41"
+        );
+    }
+
+    #[test]
+    fn a_row_in_either_bytes_form_is_the_item_again() {
+        let original = quoted();
+        let hex = vec![
+            Some("json".to_string()),
+            Some("it's #1".to_string()),
+            Some("0x7bff".to_string()),
+            Some(metadata::encode(&original.metadata)),
+        ];
+        let restored = item_from_row::<SqlServer>(&hex, "here").expect("row");
+        assert_eq!(restored, original);
+        let text = vec![
+            Some("json".to_string()),
+            Some("it's #1".to_string()),
+            Some("plain".to_string()),
+            Some(String::new()),
+        ];
+        let restored = item_from_row::<SqlServer>(&text, "here").expect("row");
+        assert_eq!(restored.bytes, b"plain");
+        assert!(restored.metadata.is_empty());
+    }
+
     #[test]
     fn an_archived_item_is_one_insert_and_its_receipt_names_the_row() {
         let original = item("json#1");
         let (address, far_end) = far_end(Some("secret"), &original, 1);
-        let store = MssqlArchive::new(address.clone(), "orders", "xmip")
+        let store = SqlArchive::<SqlServer>::new(address.clone(), "orders", "xmip")
             .with_password("secret")
             .with_table("audit.archive")
             .timing_out_after(secs(2));
@@ -228,7 +204,8 @@ mod tests {
     fn the_row_restores_the_item_over_a_second_connection() {
         let original = item("json#2");
         let (address, far_end) = far_end(None, &original, 2);
-        let store = MssqlArchive::new(address, "orders", "xmip").timing_out_after(secs(2));
+        let store =
+            SqlArchive::<SqlServer>::new(address, "orders", "xmip").timing_out_after(secs(2));
         let receipt = store.archive(original.clone()).expect("archive");
         let restored = store.restore(&receipt).expect("restore");
         assert_eq!(restored, original, "the row read back is the item");
@@ -246,7 +223,7 @@ mod tests {
     #[test]
     fn a_wrong_password_and_a_wrong_receipt_are_refused() {
         let (address, far_end) = far_end(Some("secret"), &item("json#3"), 1);
-        let store = MssqlArchive::new(address, "orders", "xmip")
+        let store = SqlArchive::<SqlServer>::new(address, "orders", "xmip")
             .with_password("wrong")
             .timing_out_after(secs(2));
         let refused = store.archive(item("json#3")).expect_err("wrong password");
