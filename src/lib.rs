@@ -30,7 +30,8 @@
 
 use archive::ArchiveError;
 use archive::sql::{Dialect, Row, Server};
-use mssql::{Client, Login, binary};
+use mssql::{Client, binary};
+use transport::Login;
 
 /// What SQL Server does its own way.
 pub struct SqlServer;

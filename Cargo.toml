@@ -20,6 +20,9 @@ archive = { package = "xmip-core-archive", git = "https://github.com/IlleNilsson
 # The connection: the sibling transport technology's Client speaks TDS with
 # SQL Server authentication, and its Session is the far end a test binds.
 mssql = { package = "xmip-core-transport-mssql", git = "https://github.com/IlleNilsson/xmip-core-transport-mssql", branch = "main" }
+# The user and password it logs in with: the transport capability's one
+# `Login`.
+transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 
 [dev-dependencies]
 # The tests archive the capability's fixture item (ADR-0044); the feature
