@@ -41,7 +41,7 @@ impl Dialect for SqlServer {
     type Connection = Client;
 
     fn quote_identifier(name: &str) -> String {
-        mssql::quote_identifier(name)
+        mssql::insert::DIALECT.quote_identifier(name)
     }
 
     fn quote_literal(text: &str) -> String {
