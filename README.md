@@ -3,8 +3,8 @@
 SQL Server archive target: one item is one row of an archive table. A technology of [xmip-core-archive](https://github.com/IlleNilsson/xmip-core-archive).
 
 The store is the capability's `archive::sql::SqlArchive`; this crate is its
-dialect, `SqlServer` — how the server quotes, how the bytes go in and come back,
-how a new row's id is asked for — and the connection through
+`archive::sql::Database`, `SqlServer` — the SQL the server speaks (T-SQL, `sql::TSQL`,
+from `xmip-core-library-sql`) and the connection through
 [xmip-core-transport-mssql](https://github.com/IlleNilsson/xmip-core-transport-mssql).
 An archive here is `SqlArchive::<SqlServer>::new(server, database, user)`.
 

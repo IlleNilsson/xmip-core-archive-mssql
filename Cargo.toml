@@ -23,6 +23,9 @@ mssql = { package = "xmip-core-transport-mssql", git = "https://github.com/IlleN
 # The user and password it logs in with: the transport capability's one
 # `Login`.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# SQL: the dialect this database speaks, which the capability's SqlArchive
+# writes its row and reads its bytes back in.
+sql = { package = "xmip-core-library-sql", git = "https://github.com/IlleNilsson/xmip-core-library-sql", branch = "main" }
 
 [dev-dependencies]
 # The tests archive the capability's fixture item (ADR-0044); the feature
