@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 
-//! SQL Server archive: the [`Dialect`] the archive capability's
+//! SQL Server archive: the [`Database`] the archive capability's
 //! `SqlArchive` keeps each retained item in an archive table with, as
 //! `SqlArchive::<SqlServer>`.
 //!
 //! The store, the row, the SELECT and the receipt are the capability's
-//! (`archive::sql`, ADR-0044); only the dialect is this crate's —
-//! bracketed identifiers, `N'…'` literals, the bytes as the `0x…` binary
+//! (`archive::sql`, ADR-0044); the SQL is T-SQL (`xmip-core-library-sql`)
+//! — bracketed identifiers, `N'…'` literals, the bytes as the `0x…` binary
 //! literal T-SQL itself writes, which a `varbinary` column stores as the
 //! bytes and answers in the same form (a text column that kept the literal
 //! verbatim answers it too, and either comes back as the bytes), and the
@@ -29,33 +29,18 @@
 //! The receipt is `mssql://<server>/<database>/<table>?id=<n>`.
 
 use archive::ArchiveError;
-use archive::sql::{Dialect, Row, Server};
-use mssql::{Client, binary};
+use archive::sql::{Database, Row, Server};
+use mssql::Client;
+use sql::{Dialect, TSQL};
 use transport::Login;
 
 /// What SQL Server does its own way.
 pub struct SqlServer;
 
-impl Dialect for SqlServer {
+impl Database for SqlServer {
     const SCHEME: &'static str = "mssql";
-    const ID_BEFORE_VALUES: &'static str = " OUTPUT INSERTED.id";
+    const DIALECT: Dialect = TSQL;
     type Connection = Client;
-
-    fn quote_identifier(name: &str) -> String {
-        mssql::insert::DIALECT.quote_identifier(name)
-    }
-
-    fn quote_literal(text: &str) -> String {
-        mssql::quote_literal(text)
-    }
-
-    fn bytes_literal(bytes: &[u8]) -> String {
-        binary::hex_literal(bytes)
-    }
-
-    fn column_bytes(text: &str) -> Option<Vec<u8>> {
-        binary::from_hex_literal(text)
-    }
 
     fn connect(server: &Server) -> Result<Client, ArchiveError> {
         let login = Login::new(&*server.user, server.password.clone().unwrap_or_default());
@@ -96,7 +81,7 @@ mod tests {
         let row = [
             Some(held.data_type.clone()),
             Some(held.identifier.clone()),
-            Some(binary::hex_literal(&held.bytes)),
+            Some(TSQL.quote_bytes(&held.bytes)),
             Some(metadata::encode(&held.metadata)),
         ];
         let handle = std::thread::spawn(move || {
