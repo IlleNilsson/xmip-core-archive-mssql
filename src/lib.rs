@@ -219,7 +219,7 @@ mod tests {
         assert!(refused.message.contains("18456"), "{refused}");
         far_end.join().expect("thread");
         for location in [
-            "s3://bucket/key",
+            "aws-s3://bucket/key",
             "mssql://host/orders/archive",
             "mssql://host/orders/archive?id=x",
             "mssql://host/orders?id=1",
