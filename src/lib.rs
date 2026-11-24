@@ -120,7 +120,7 @@ mod tests {
             data_type: "json".to_string(),
             identifier: "it's #1".to_string(),
             bytes: vec![0x7b, 0xff],
-            metadata: vec![("source".to_string(), "essentials".to_string())],
+            metadata: vec![("source".to_string(), "system-test".to_string())],
         }
     }
 
@@ -185,7 +185,7 @@ mod tests {
         };
         assert!(sql.starts_with("INSERT INTO [audit].[archive] (data_type, identifier, "));
         assert!(sql.contains("OUTPUT INSERTED.id VALUES (N'json', N'json#1', "));
-        assert!(sql.contains("0x7b226b657074223a747275657d, N'source\u{1f}essentials', N'20"));
+        assert!(sql.contains("0x7b226b657074223a747275657d, N'source\u{1f}system-test', N'20"));
         assert!(sql.ends_with("Z')"), "{sql}");
     }
 
