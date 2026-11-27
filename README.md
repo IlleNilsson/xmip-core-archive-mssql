@@ -8,11 +8,6 @@ from `xmip-core-library-sql`) and the connection through
 [xmip-core-transport-mssql](https://github.com/IlleNilsson/xmip-core-transport-mssql).
 An archive here is `SqlArchive::<SqlServer>::new(server, database, user)`.
 
-## Toolchain
-
-`rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
-here.
-
 ## Verification
 
 The included workflow is manual-only and calls the versioned shared workflow at
